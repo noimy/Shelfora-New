@@ -1,0 +1,352 @@
+// prisma/schema.prisma
+// Shelfora — Full Database Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────
+// USERS & ACCOUNTS
+// ─────────────────────────────────────────────
+
+enum PlanType {
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  name               String
+  email              String    @unique
+  passwordHash       String
+  emailVerified      Boolean   @default(false)
+  emailVerifyToken   String?
+  resetToken         String?
+  resetTokenExpiry   DateTime?
+  plan               PlanType  @default(BASIC)
+  stripeCustomerId   String?
+  stripeSubId        String?
+  trialEndsAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  businesses         Business[]
+  sessions           Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ─────────────────────────────────────────────
+// BUSINESS / LOCATION
+// ─────────────────────────────────────────────
+
+enum BusinessType {
+  COFFEE_SHOP
+  BAKERY
+  GROCERY
+  RETAIL
+  CONVENIENCE
+  VAPE_SHOP
+  RESTAURANT
+  OTHER
+}
+
+model Business {
+  id           String       @id @default(cuid())
+  userId       String
+  name         String
+  type         BusinessType @default(OTHER)
+  timezone     String       @default("America/Chicago")
+  currency     String       @default("USD")
+  defaultLeadTime  Int      @default(5)
+  safetyStockMult  Float    @default(2.0)
+  lowStockThreshold Int     @default(10)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products     Product[]
+  integrations Integration[]
+  alerts       Alert[]
+  auditLogs    AuditLog[]
+  notifSettings NotificationSettings?
+
+  @@map("businesses")
+}
+
+// ─────────────────────────────────────────────
+// PRODUCTS
+// ─────────────────────────────────────────────
+
+enum ProductStatus {
+  ACTIVE
+  ARCHIVED
+  OUT_OF_STOCK
+}
+
+model Product {
+  id            String        @id @default(cuid())
+  businessId    String
+  name          String
+  category      String        @default("Other")
+  sku           String?
+  barcode       String?
+  posProductId  String?       // external POS system ID
+  currentStock  Float         @default(0)
+  reorderLevel  Float         @default(0)
+  leadTimeDays  Int           @default(5)
+  costPerUnit   Float         @default(0)
+  supplier      String?
+  supplierEmail String?
+  status        ProductStatus @default(ACTIVE)
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sales         Sale[]
+  adjustments   InventoryAdjustment[]
+  predictions   Prediction[]
+  alerts        Alert[]
+  auditLogs     AuditLog[]
+
+  @@index([businessId])
+  @@index([barcode])
+  @@index([posProductId])
+  @@map("products")
+}
+
+// ─────────────────────────────────────────────
+// SALES
+// ─────────────────────────────────────────────
+
+enum SaleSource {
+  MANUAL
+  POS
+  BARCODE
+  CSV_IMPORT
+  WEBHOOK
+}
+
+model Sale {
+  id           String     @id @default(cuid())
+  productId    String
+  businessId   String
+  quantitySold Float
+  source       SaleSource @default(MANUAL)
+  saleDate     DateTime   @default(now())
+  posRefId     String?    // external transaction ID
+  notes        String?
+  createdBy    String?
+  createdAt    DateTime   @default(now())
+
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  auditLogs    AuditLog[]
+
+  @@index([productId])
+  @@index([businessId])
+  @@index([saleDate])
+  @@map("sales")
+}
+
+// ─────────────────────────────────────────────
+// INVENTORY ADJUSTMENTS
+// ─────────────────────────────────────────────
+
+enum AdjustmentReason {
+  STOCK_COUNT
+  DAMAGE
+  THEFT
+  RECEIVING
+  RETURN
+  EXPIRY
+  OTHER
+}
+
+model InventoryAdjustment {
+  id            String           @id @default(cuid())
+  productId     String
+  businessId    String
+  previousStock Float
+  newStock      Float
+  reason        AdjustmentReason @default(STOCK_COUNT)
+  notes         String?
+  adjustedBy    String?
+  createdAt     DateTime         @default(now())
+
+  product       Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  auditLogs     AuditLog[]
+
+  @@index([productId])
+  @@map("inventory_adjustments")
+}
+
+// ─────────────────────────────────────────────
+// PREDICTIONS (cached results)
+// ─────────────────────────────────────────────
+
+model Prediction {
+  id                String    @id @default(cuid())
+  productId         String
+  businessId        String
+  avgDailySales     Float
+  daysUntilStockout Float
+  stockoutDate      DateTime?
+  reorderDate       DateTime?
+  recommendedQty    Float
+  safetyStock       Float
+  status            String    // green | amber | red
+  calculatedAt      DateTime  @default(now())
+
+  product           Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([businessId])
+  @@map("predictions")
+}
+
+// ─────────────────────────────────────────────
+// INTEGRATIONS (POS OAuth)
+// ─────────────────────────────────────────────
+
+enum IntegrationProvider {
+  SQUARE
+  SHOPIFY
+  CLOVER
+  TOAST
+  LIGHTSPEED
+}
+
+model Integration {
+  id           String              @id @default(cuid())
+  businessId   String
+  provider     IntegrationProvider
+  accessToken  String?
+  refreshToken String?
+  storeId      String?
+  webhookId    String?
+  isActive     Boolean             @default(true)
+  lastSyncAt   DateTime?
+  syncMode     String              @default("webhook")
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  business     Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, provider])
+  @@map("integrations")
+}
+
+// ─────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────
+
+enum AlertType {
+  STOCKOUT_IMMINENT
+  REORDER_DUE
+  OUT_OF_STOCK
+  LOW_STOCK
+}
+
+model Alert {
+  id          String    @id @default(cuid())
+  businessId  String
+  productId   String
+  type        AlertType
+  message     String
+  daysLeft    Float?
+  reorderQty  Float?
+  isRead      Boolean   @default(false)
+  emailSent   Boolean   @default(false)
+  smsSent     Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([productId])
+  @@map("alerts")
+}
+
+// ─────────────────────────────────────────────
+// NOTIFICATION SETTINGS
+// ─────────────────────────────────────────────
+
+model NotificationSettings {
+  id               String   @id @default(cuid())
+  businessId       String   @unique
+  emailAlerts      Boolean  @default(true)
+  smsAlerts        Boolean  @default(false)
+  smsPhone         String?
+  dashboardAlerts  Boolean  @default(true)
+  criticalAlerts   Boolean  @default(true)
+  reorderDayAlert  Boolean  @default(true)
+  weeklyDigest     Boolean  @default(true)
+  alertThresholdDays Int    @default(3)
+  updatedAt        DateTime @updatedAt
+
+  business         Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────────
+
+enum AuditAction {
+  SALE_RECORDED
+  SALE_DELETED
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  PRODUCT_DELETED
+  STOCK_ADJUSTED
+  INTEGRATION_CONNECTED
+  INTEGRATION_DISCONNECTED
+  USER_LOGIN
+  SETTINGS_UPDATED
+}
+
+model AuditLog {
+  id           String      @id @default(cuid())
+  businessId   String
+  productId    String?
+  saleId       String?
+  adjustmentId String?
+  action       AuditAction
+  source       String      @default("manual")
+  detail       String
+  quantity     Float?
+  performedBy  String?
+  ipAddress    String?
+  createdAt    DateTime    @default(now())
+
+  business     Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  product      Product?    @relation(fields: [productId], references: [id], onDelete: SetNull)
+  sale         Sale?       @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  adjustment   InventoryAdjustment? @relation(fields: [adjustmentId], references: [id], onDelete: SetNull)
+
+  @@index([businessId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
