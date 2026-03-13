@@ -1,0 +1,19 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/daily",
+      "schedule": "0 6 * * *"
+    }
+  ],
+  "functions": {
+    "src/app/api/webhooks/**": {
+      "maxDuration": 30
+    },
+    "src/app/api/cron/**": {
+      "maxDuration": 300
+    },
+    "src/app/api/sales/csv-import/**": {
+      "maxDuration": 60
+    }
+  }
+}
